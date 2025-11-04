@@ -243,9 +243,6 @@ class QBot:
     
 
 
-
-
-
 # Play vs QBot: Tkinter UI
 STATE_COLORS = {
     EMPTY:  "#ffffff",
@@ -320,12 +317,10 @@ class QBotUI(tk.Tk):
         self.theme_btn = tk.Button(self.bar, text="🌞", command=self.toggle_theme, bd=0, highlightthickness=0)
         self.theme_btn.pack(side="right")
 
-        # Status and Footer
+        # Status
         self.status_var = tk.StringVar()
         self.status = tk.Label(self, textvariable=self.status_var)
         self.status.pack(padx=10, pady=(0,8), anchor="w")
-
-        self.footer = None
 
         # Board
         w = self.game.cols * self.cell
@@ -341,8 +336,6 @@ class QBotUI(tk.Tk):
         self.state('zoomed') 
 
         self._init_cells()
-        self._draw_board_frame()
-        self._redraw_all()
         self._set_status("Pick P1 or P2, then Press New Game.")
 
         self.apply_theme()
@@ -439,15 +432,11 @@ class QBotUI(tk.Tk):
                 except tk.TclError:
                     pass
 
-        # Status/Footer
+        # Status
         self.status.configure(fg=t["text_fg"], bg=t["window_bg"])
-        if self.footer:
-            self.footer.configure(fg=t["text_fg"], bg=t["window_bg"])
-
+        
         # Canvas and Cells
         self.canvas.configure(bg=t["canvas_bg"])
-        # Update the Frame to the New Colour
-        self._draw_board_frame()
         self._redraw_all()
 
 
