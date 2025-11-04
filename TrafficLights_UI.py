@@ -192,8 +192,6 @@ class TwoPlayerUI(tk.Tk):
 
         # Draw
         self._init_cells()
-        self._draw_board_frame()
-        self._redraw_all()
         self._set_status("Press New Game to start. Player 1 moves first.")
 
         self.apply_theme()
