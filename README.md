@@ -50,6 +50,7 @@ License: MIT (see `LICENSE`).
 
 ### 1) Learning Algorithm (Q‑Learning) and Exploration
 This code implements **Tabular Q‑Learning** with an **ε‑greedy** policy. The agent maintains a value table $Q(s,a)$ estimating the long‑term utility of taking action $a$ in state $s$. During training, on each turn, it chooses:
+
 - a **random legal move** with probability $\varepsilon$ (exploration), or
 - the **greedy** action $\arg\max_a Q(s,a)$ with probability $1-\varepsilon$ (exploitation).
 
@@ -57,13 +58,17 @@ Exploration is necessary because, from an empty board, the action space is large
 **Evaluation** should be performed with $\varepsilon = 0$ (no randomness) so the agent plays its learned greedy policy deterministically; the training code’s evaluation options do exactly that.
 
 **Update rule.** The current training loops apply **terminal‑only updates**: a Q‑value is adjusted **only when the game ends**. Let $r\in\{+1,0,-1\}$ denote the outcome from QBot’s perspective $(+1=\text{win}, -1=\text{loss}, 0=\text{draw/invalid})$. If QBot wins on move $(s,a)$, then
+
 $$
-Q(s,a) \leftarrow Q(s,a) + \alpha\, \big( \, +1 - Q(s,a) \, \big).
+Q(s,a) \leftarrow Q(s,a) + \alpha\, ( +1 - Q(s,a) ).
 $$
+
 If the **opponent** wins immediately after QBot’s last move $(\tilde{s},\tilde{a})$, that **pending** action is penalized:
+
 $$
-Q(\tilde{s},\tilde{a}) \leftarrow Q(\tilde{s},\tilde{a}) + \alpha\, \big( \, -1 - Q(\tilde{s},\tilde{a}) \, \big).
+Q(\tilde{s},\tilde{a}) \leftarrow Q(\tilde{s},\tilde{a}) + \alpha\, ( -1 - Q(\tilde{s},\tilde{a}) ).
 $$
+
 No intermediate bootstrapping term is used (i.e., the target does not include $\gamma \max_{a'} Q(s',a')$); the update reduces to a Monte‑Carlo‑style move‑credit on terminal feedback. To avoid first‑move bias, the script alternates seats so QBot trains as both the first and second player across games.
 
 ### 2) Baseline Opponents and Training Curriculum
