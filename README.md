@@ -1,7 +1,7 @@
 # TrafficLightsGame-AI
 
 Q-learning agent that learns and plays **Alan Parr’s Traffic Lights**.
-Trained Q-Tables are available here: **[Google Drive folder – latest QTables](https://drive.google.com/drive/folders/13NguVbUBJ8DK68KiVXX9aep2TC-2lbAa?usp=sharing)**
+Trained Q-Tables are available here: **[Google Drive Folder](https://drive.google.com/drive/folders/13NguVbUBJ8DK68KiVXX9aep2TC-2lbAa?usp=sharing)**
 
 ---
 
