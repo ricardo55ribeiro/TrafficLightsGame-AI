@@ -29,7 +29,7 @@ Trained Q-Tables are available here: **[Google Drive Folder](https://drive.googl
      - Horizontal (across a row);
      - Vertical (down a column);
      - Diagonal (across adjacent rows and columns).
-   - A line of four still qualifies if it includes at least one contiguous segment of three.
+   - A line of four still qualifies as it contains a segment of three (actually, two).
 
 ---
 
@@ -69,7 +69,7 @@ $$
 Q(\tilde{s},\tilde{a}) \leftarrow Q(\tilde{s},\tilde{a}) + \alpha\, ( -1 - Q(\tilde{s},\tilde{a}) ).
 $$
 
-No intermediate bootstrapping term is used (i.e., the target does not include $\gamma \max_{a'} Q(s',a')$); the update reduces to a Monte‑Carlo‑style move‑credit on terminal feedback. To avoid first‑move bias, the script alternates seats so QBot trains as both the first and second player across games.
+No intermediate bootstrapping term is used (i.e., the target does not include $\gamma \max_{a^{\prime}} Q(s^{\prime}, a^{\prime})$); the update reduces to a Monte-Carlo-style move-credit on terminal feedback. To avoid first-move bias, the script alternates seats so QBot trains as both the first and second player across games.
 
 ### 2) Baseline Opponents and Training Curriculum
 - **RandomBot** — samples uniformly among legal moves. It is ideal for **early training** because it exposes many different opening positions quickly. However, once QBot becomes competent, games against RandomBot rarely progress into rich mid/late positions, so it provides diminishing returns.
