@@ -51,50 +51,43 @@ License: MIT (see `LICENSE`).
 ### 1) Learning Algorithm (Q‑Learning) and Exploration
 This code implements **Tabular Q‑Learning** with an **ε‑greedy** policy. The agent maintains a value table $Q(s,a)$ estimating the long‑term utility of taking action $a$ in state $s$. During training, on each turn, it chooses:
 
-- a **random legal move** with probability $\varepsilon$ (exploration), or
-- the **greedy** action $\arg\max_a Q(s,a)$ with probability $1-\varepsilon$ (exploitation).
+- a **random legal move** with probability $\varepsilon$ (Exploration), or
+- the **greedy** action $\arg\max_a Q(s,a)$ with probability $1-\varepsilon$ (Exploitation).
 
-Exploration is necessary because, from an empty board, the action space is large and most states are unseen early on; without random tries the agent would get stuck repeating whatever it currently believes is the best. The script uses a **multiplicative decay** per game so that $\varepsilon$ starts high and decreases toward a floor $\varepsilon_{\text{end}}$: this yields broad exploration at first and stable exploitation later.  
-**Evaluation** should be performed with $\varepsilon = 0$ (no randomness) so the agent plays its learned greedy policy deterministically; the training code’s evaluation options do exactly that.
+Exploration is necessary because, from an empty board, the action space is large and most states are unseen early on; without random tries, the agent would get stuck repeating whatever it currently believes is best. The code uses a **multiplicative decay** per game so that $\varepsilon$ starts high and decreases toward a floor $\varepsilon_{\text{end}}$: this yields broad exploration at first and stable exploitation later.  
+**Evaluation** should be performed with $\varepsilon = 0$ (no randomness) so the agent plays its learned greedy policy deterministically.
 
-**Update rule.** The current training loops apply **terminal‑only updates**: a Q‑value is adjusted **only when the game ends**. Let $r\in\{+1,0,-1\}$ denote the outcome from QBot’s perspective $(+1=\text{win}, -1=\text{loss}, 0=\text{draw/invalid})$. If QBot wins on move $(s,a)$, then
+**Update rule.** The current training loops apply **terminal‑only updates**: a Q‑value is adjusted **only when the game ends**. Let $r\in\{+1,-1\}$ denote the outcome from QBot’s perspective $(+1=\text{win}, -1=\text{loss})$. If QBot wins on move $(s,a)$, then
 
 $$
-Q(s,a) \leftarrow Q(s,a) + \alpha\, ( +1 - Q(s,a) ).
+Q(s,a) \leftarrow Q(s,a) + \alpha ( +1 - Q(s,a) )
 $$
 
 If the **opponent** wins immediately after QBot’s last move $(\tilde{s},\tilde{a})$, that **pending** action is penalized:
 
 $$
-Q(\tilde{s},\tilde{a}) \leftarrow Q(\tilde{s},\tilde{a}) + \alpha\, ( -1 - Q(\tilde{s},\tilde{a}) ).
+Q(\tilde{s},\tilde{a}) \leftarrow Q(\tilde{s},\tilde{a}) + \alpha ( -1 - Q(\tilde{s},\tilde{a}) )
 $$
 
-The code alternates betweeen Player 1 and Player 2, so QBot learns to play in both seats.
+The code alternates between Player 1 and Player 2, so QBot learns to play in both seats.
 
 ### 2) Baseline Opponents and Training Curriculum
-- **RandomBot** — samples uniformly among legal moves. It is ideal for **early training** because it exposes many different opening positions quickly. However, once QBot becomes competent, games against RandomBot rarely progress into rich mid/late positions, so it provides diminishing returns.
+- **RandomBot** — samples uniformly among legal moves. It is ideal for **early training** because it exposes many different opening positions quickly. However, once QBot becomes competent, games against RandomBot rarely progress into rich mid/late positions, so it provides diminishing returns. It may also reinforce blunder plays from QBot, as long as the game is won by QBot.
 - **AlternateBot** — plays **myopically** (tries to win now, otherwise blocks an immediate loss) for an early, randomly chosen number of plays and then switches to **random** play. This curriculum **forces the game past the opening** so QBot experiences, explores, and updates on **late‑game** structures. The trade‑off is that, after switching to random, AlternateBot may **fail to punish** certain blunders, so QBot is not always corrected for every mistake.
 - **MyopicBot** — a deterministic, tactical baseline: if a winning move exists **this turn**, it takes it; else if the opponent could win **next turn**, it blocks; otherwise it picks randomly among remaining legal moves. Training against MyopicBot provides **consistent punishment for obvious tactical errors** and requires QBot to spot immediate wins and blocks.
 
-> Self‑play note: a QBot‑vs‑QBot mode is a natural extension for covering late‑game slips that baseline bots might miss and, in principle, it would double data throughput (both players learn). This training script focuses on the three bots above; self‑play can be added later as an optional mode.
+> Self‑play note: a QBot‑vs‑QBot mode is a natural extension for covering late‑game slips that baseline bots might miss and, in principle, it would double data throughput (both players learn simultaneously). This training code also includes QBot-vs-QBot, even though I only recommend it after a somewhat intense training with the Baseline Opponents.
 
 ### 3) Persistence: Atomic Saves, Delta Logging, and Checkpoints
-- **Atomic Q‑table saves.** When writing `qtable.json`, the script first writes to a temporary file (e.g., `qtable.json.tmp`), flushes to disk, and then performs an **atomic rename**. If the process stops mid‑write, the previous `qtable.json` remains intact.
-- **Delta logger.** Every Q‑value update is appended to a newline‑delimited JSON file (e.g., `q_deltas.jsonl`) as a compact record `{s, a, v}` containing the updated entry. On resume, the script **replays** all logged deltas into memory (or into an existing Q‑table) and then commits a single atomic save. After a successful consolidation, the delta file is **rotated** (e.g., renamed to `q_deltas.jsonl.done`) so it is not re‑applied.
-- **Checkpoints and safe interrupt.** Periodically, and on Ctrl‑C, the script writes a checkpoint (e.g., `*_checkpoint.json`) storing the next game index and the current exploration rate $\varepsilon$. On interrupt, it also flushes any outstanding deltas and performs one last atomic save, so training can be **resumed exactly where it stopped** without losing Q‑table progress.
+- **Atomic Q‑table saves.** When writing `qtable.json`, the code first writes to a temporary file (e.g., `qtable.json.tmp`), flushes to disk, and then performs an **atomic rename**. If the process stops mid‑write, the previous `qtable.json` remains intact. Crucial if `qtable.json` is huge.
+- **Delta logger.** Every Q‑value update is appended to a newline‑delimited JSON file (e.g., `q_deltas.jsonl`) as a compact record `{s, a, v}` containing the updated entry. On resume, the code **replays** all logged deltas into memory (or into an existing Q‑table) and then commits a single atomic save. After a successful consolidation, the delta file is **rotated** (e.g., renamed to `q_deltas.jsonl.done`) so it is not re‑applied.
+- **Checkpoints and safe interrupt.** Periodically, and on Ctrl‑C, the code writes a checkpoint (e.g., `*_checkpoint.json`) storing the next game index and the current exploration rate $\varepsilon$. On interrupt, it also flushes any outstanding deltas and performs one last atomic save, so training can be **resumed exactly where it stopped** without losing Q‑table progress.
 
 ---
 
 ## Results
 
 (Work To Do)
-
----
-
-## Notes
-
-- Implementation uses **tabular Q-learning** with **ε-greedy** exploration.
-- The board size is fixed by design at **3×4**.
 
 ---
 
