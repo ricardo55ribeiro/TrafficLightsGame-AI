@@ -85,6 +85,12 @@ The code alternates between Player 1 and Player 2, so QBot learns to play in bot
 
 ---
 
+## Demonstrations
+
+![Arena (vs QBot) in Day Mode](assets/Arena_daymode.gif)
+
+---
+
 ## Results
 
 (Work To Do)
