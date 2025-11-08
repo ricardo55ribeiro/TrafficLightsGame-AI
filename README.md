@@ -103,3 +103,10 @@ The code alternates between Player 1 and Player 2, so QBot learns to play in bot
 
 - Python 3.x. No external pip dependencies.
 - On Linux, install Tkinter if missing: `sudo apt install python3-tk`.
+
+---
+
+## To-Do
+
+- Test QBot Agent Performance with Different Training Programmes
+- Develop AstigmaticBot: a Better Baseline Opponent that Explores the Probability Space up to 3 Moves Beyond the Current State (terminating before combinatorial explosion), and Selects the Optimal Move on the Basis of that Evaluation.
