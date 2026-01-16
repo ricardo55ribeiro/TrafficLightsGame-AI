@@ -93,12 +93,6 @@ The code alternates between Player 1 and Player 2, so QBot learns to play in bot
 
 ---
 
-## Results
-
-(Work To Do)
-
----
-
 ## Requirements
 
 - Python 3.x. No external pip dependencies.
