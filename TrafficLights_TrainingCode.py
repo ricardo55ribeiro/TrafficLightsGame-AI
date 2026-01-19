@@ -1364,6 +1364,243 @@ def train_qbot_vs_qbot_shared(
 
 
 
+# Training Curriculum (to avoid overfitting)
+# Each Game, Picks the Opponent According to Percentages
+def train_qbot_vs_curriculum(
+    n_games: int,
+    curriculum_percent: Dict[str, int],
+    horizon_n: Optional[int] = None,
+    q_path: str = "qtable.json",
+    alpha: float = 0.5,
+    gamma: float = 0.99,
+    epsilon_start: float = 0.20,
+    epsilon_end: float = 0.01,
+    epsilon_decay: float = 0.9995,
+    save_every: int = 5000,
+    verbose_every: int = 2000,
+    seed: Optional[int] = None,
+    checkpoint_path: str = "curriculum_checkpoint.json",
+    resume: bool = True,
+    delta_path: str = "q_curriculum_deltas.jsonl",
+    snapshot_every: int = 2000,
+):
+    # Helpers
+    def _weighted_choice(rng: random.Random, items: List[Tuple[str, float]]) -> str:
+        total = sum(w for _, w in items)
+        x = rng.random() * total
+        acc = 0.0
+        for k, w in items:
+            acc += w
+            if x <= acc:
+                return k
+        return items[-1][0]
+
+    def _deepcopy_Q(Q: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
+        return {s: dict(a) for s, a in Q.items()}
+
+    def _play_episode_vs_opponent(
+        qb: QBot,
+        opp_bot,
+        qb_player: int,
+        on_opp_move_played=None,
+    ) -> Optional[int]:
+        game = TrafficLightsGame()
+        pending_s = None
+        pending_a = None
+
+        while not game.finished:
+            if game.current_player == qb_player:
+                s = qb._state_key(game)
+                mv = qb.choose(game)
+                if mv is None:
+                    if pending_s is not None and pending_a is not None:
+                        qb.update(pending_s, pending_a, 0.0, None, [])
+                        pending_s = pending_a = None
+                    break
+
+                r, c = mv
+                a_key = qb._action_key(r, c)
+                ok = game.advance(r, c)
+                if not ok:
+                    qb.update(s, a_key, -1.0, None, [])
+                    break
+
+                if game.finished:
+                    qb.update(s, a_key, +1.0, None, [])
+                    break
+
+                pending_s, pending_a = s, a_key
+
+            else:
+                mv_opp = opp_bot.choose(game)
+                if mv_opp is None:
+                    if pending_s is not None and pending_a is not None:
+                        qb.update(pending_s, pending_a, 0.0, None, [])
+                        pending_s = pending_a = None
+                    break
+
+                rr, cc = mv_opp
+                ok = game.advance(rr, cc)
+                if ok and on_opp_move_played is not None:
+                    on_opp_move_played()
+
+                if not ok:
+                    if pending_s is not None and pending_a is not None:
+                        qb.update(pending_s, pending_a, 0.0, None, [])
+                        pending_s = pending_a = None
+                    break
+
+                if game.finished:
+                    if pending_s is not None and pending_a is not None:
+                        qb.update(pending_s, pending_a, -1.0, None, [])
+                        pending_s = pending_a = None
+                    break
+                else:
+                    if pending_s is not None and pending_a is not None:
+                        s_next = qb._state_key(game)
+                        legal_next = qb.candidate_moves(game)
+                        qb.update(pending_s, pending_a, 0.0, s_next, legal_next)
+                        pending_s = pending_a = None
+
+        return game.winner
+
+    # Validate Curriculum
+    total_pct = sum(int(v) for v in curriculum_percent.values())
+    if total_pct != 100:
+        raise ValueError(f"Curriculum Percentages must sum to 100, got {total_pct}.")
+
+    if ("H" in curriculum_percent) and (not horizon_n or horizon_n < 1):
+        raise ValueError("Curriculum includes 'H' but horizon_n is missing or invalid.")
+
+    # Setup
+    rng = random.Random(seed)
+    delta = DeltaLogger(path=delta_path, flush_every=5000)
+
+    qb = QBot(
+        alpha=alpha, gamma=gamma, epsilon=epsilon_start, seed=seed,
+        q_path=q_path if os.path.exists(q_path) else None,
+        delta_logger=delta,
+    )
+    delta.replay_into(qb.Q)
+
+    qb_snap = QBot(alpha=0.0, gamma=gamma, epsilon=0.0, seed=None, delta_logger=None)
+    qb_snap.Q = _deepcopy_Q(qb.Q)
+
+    rb = RandomBot(seed=seed)
+    mb = MyopicBot(seed=seed)
+    ab = AlternateBot(seed=seed)
+    hb = HorizonBot(depth=int(horizon_n), seed=seed) if ("H" in curriculum_percent) else None
+
+    weighted_items = [(k, float(v)) for k, v in curriculum_percent.items()]
+
+    start_game = 1
+    eps = epsilon_start
+    if resume and os.path.exists(checkpoint_path):
+        try:
+            with open(checkpoint_path, "r", encoding="utf-8") as f:
+                ck = json.load(f)
+            start_game = int(ck.get("next_game", 1))
+            eps = float(ck.get("epsilon", epsilon_start))
+            eps = max(epsilon_end, min(eps, epsilon_start))
+            # If a previous run used a different curriculum, still resume safely (same Q-table file).
+            print(f"[resume] starting at game {start_game} with ε={eps:.4f}")
+        except Exception:
+            pass
+    qb.epsilon = eps
+
+    def save_checkpoint(next_game: int, epsilon_val: float):
+        _atomic_json_write(checkpoint_path, {
+            "next_game": int(next_game),
+            "epsilon": float(epsilon_val),
+            "qtable_rows": int(len(qb.Q)),
+            "curriculum_percent": {k: int(v) for k, v in curriculum_percent.items()},
+            "horizon_n": int(horizon_n) if horizon_n is not None else None,
+        })
+
+    wins_by_opp = {k: 0 for k in curriculum_percent.keys()}
+    p1_wins = 0
+    p2_wins = 0
+
+    # Training Loop
+    try:
+        for g_idx in range(start_game, start_game + n_games):
+            qb.epsilon = eps if g_idx == start_game else max(epsilon_end, qb.epsilon * epsilon_decay)
+            eps = qb.epsilon
+
+            if snapshot_every > 0 and ((g_idx - start_game) % snapshot_every == 0):
+                qb_snap.Q = _deepcopy_Q(qb.Q)
+
+            opp_code = _weighted_choice(rng, weighted_items)
+
+            qb_player = 1 if (g_idx % 2 == 1) else 2
+
+            if opp_code == "R":
+                winner = _play_episode_vs_opponent(qb, rb, qb_player)
+
+            elif opp_code == "M":
+                winner = _play_episode_vs_opponent(qb, mb, qb_player)
+
+            elif opp_code == "A":
+                ab.new_game()
+                winner = _play_episode_vs_opponent(qb, ab, qb_player, on_opp_move_played=ab.on_move_played)
+
+            elif opp_code == "H":
+                if hb is not None:
+                    hb._tt.clear()
+                winner = _play_episode_vs_opponent(qb, hb, qb_player)
+
+            elif opp_code == "Q":
+                winner = _play_episode_vs_opponent(qb, qb_snap, qb_player)
+
+            else:
+                raise ValueError(f"Unknown curriculum opponent code: {opp_code}")
+
+            if winner == qb_player:
+                wins_by_opp[opp_code] += 1
+            if winner == 1:
+                p1_wins += 1
+            elif winner == 2:
+                p2_wins += 1
+
+            if save_every and (g_idx % save_every == 0):
+                delta.flush()
+                save_checkpoint(g_idx + 1, eps)
+
+            if verbose_every and (g_idx % verbose_every == 0):
+                decided = p1_wins + p2_wins
+                parts = " ".join(f"{k}:{wins_by_opp[k]}" for k in sorted(wins_by_opp.keys()))
+                print(f"[{g_idx}] ε={eps:.4f}  wins({parts})  (P1:{p1_wins} P2:{p2_wins}, decided={decided})")
+
+        delta.flush()
+        if os.path.exists(q_path):
+            with open(q_path, "r", encoding="utf-8") as f:
+                bigQ = json.load(f)
+        else:
+            bigQ = {}
+        _ = delta.replay_into(bigQ)
+        _atomic_json_write(q_path, bigQ)
+        delta.rotate()
+        save_checkpoint(g_idx + 1, eps)
+
+    except KeyboardInterrupt:
+        print("\n[Curriculum] Ctrl+C. Flushing deltas and consolidating atomically...")
+        delta.flush()
+        if os.path.exists(q_path):
+            with open(q_path, "r", encoding="utf-8") as f:
+                bigQ = json.load(f)
+        else:
+            bigQ = {}
+        _ = delta.replay_into(bigQ)
+        _atomic_json_write(q_path, bigQ)
+        delta.rotate()
+        next_g = (g_idx + 1) if 'g_idx' in locals() else start_game
+        save_checkpoint(next_g, eps)
+
+    return qb, {"wins_by_opp": wins_by_opp, "P1": p1_wins, "P2": p2_wins}
+
+
+
+
 # Functions to evaluate QBot
 def eval_qbot_vs_random(n_games: int = 1000, q_path: str = "qtable.json", seed: Optional[int] = None):
     qb = QBot(alpha=0.0, gamma=0.99, epsilon=0.0, seed=seed, q_path=q_path)
@@ -1486,10 +1723,61 @@ def _read_positive_int(prompt: str) -> int:
         except: pass
         print("Please enter a positive integer (e.g., 10000).")
 
+def _read_percent_int(prompt: str) -> int:
+    while True:
+        try:
+            n = int(input(prompt).strip())
+            if 0 <= n <= 100:
+                return n
+        except:
+            pass
+        print("Please enter an integer between 0 and 100.")
+
+def _read_curriculum() -> Tuple[Dict[str, int], Optional[int]]:
+    """
+    Reads (bot_code, percent) pairs until total == 100.
+    Returns (curriculum_percent, horizon_n).
+    """
+    allowed = {"R", "A", "M", "H", "Q"}
+    curriculum: Dict[str, int] = {}
+    total = 0
+    horizon_n: Optional[int] = None
+
+    print("\nEnter curriculum parts until total reaches 100%.")
+
+    while total < 100:
+        code = input(f"Add to the curriculum (R, A, M, H, Q) (current total={total}%): ").strip().upper()
+        if not code:
+            continue
+        code = code[:1]
+        if code not in allowed:
+            print("Invalid code.")
+            continue
+
+        pct = _read_percent_int(f"Percent for {code}: ")
+        if pct == 0:
+            continue
+
+        if total + pct > 100:
+            print(f"That would exceed 100% (you tried {total + pct}%). Not accepted.")
+            continue
+
+        if code in curriculum:
+            curriculum[code] += pct
+        else:
+            curriculum[code] = pct
+        total += pct
+
+        if code == "H" and horizon_n is None:
+            horizon_n = _read_positive_int("HorizonBot: what N (half-plies to look ahead)? ")
+
+    return curriculum, horizon_n
+
+
 
 
 if __name__ == "__main__":
-    choice = input("With what bot do you want to train: Random, Alternate, Myopic, Horizon or QBot? (R, A, M, H, Q) \nOr do you want to evaluate? (1 for R, 2 for A, 3 for M, 4 for H) ").strip().upper()
+    choice = input("Train vs: Random, Alternate, Myopic, Horizon, QBot, or Curriculum? (R, A, M, H, Q, %) \nOr evaluate? (1 for R, 2 for A, 3 for M, 4 for H) ").strip().upper()
     choice = choice[:1] if choice else ""
 
     if choice == "R":
@@ -1563,6 +1851,26 @@ if __name__ == "__main__":
             resume=True,
         )
         print("Self-play finished. Agent/seat wins:", stats)
+    
+    elif choice == "%":
+        curriculum, horizon_n = _read_curriculum()
+        n = _read_positive_int("How many training games (curriculum total)? ")
+
+        bot, stats = train_qbot_vs_curriculum(
+            n_games=n,
+            curriculum_percent=curriculum,
+            horizon_n=horizon_n,
+            q_path="qtable.json",
+            alpha=0.5, gamma=0.99,
+            epsilon_start=0.2, epsilon_end=0.005, epsilon_decay=0.9995,
+            save_every=5000, verbose_every=2000,
+            checkpoint_path="curriculum_checkpoint.json",
+            resume=True,
+            delta_path="q_curriculum_deltas.jsonl",
+            snapshot_every=2000,
+        )
+        print("Curriculum training finished. Stats:", stats)
+
 
     elif choice == "1":
         n = _read_positive_int("How many evaluation games (QBot vs RandomBot)? ")
