@@ -35,12 +35,12 @@ Trained Q-Tables are available here: **[Google Drive Folder](https://drive.googl
 
 ## Repository Map
 
-- `TrafficLights_UI.py` — PvP Tkinter UI (local two-player match; highlights a winning line when it appears).
-- `TrafficLights_QBot_Arena.py` — PvE Tkinter UI (play against the learned Q-bot). Looks for `qtable.json` in the working directory.
-- `TrafficLights_TrainingCode.py` — Train, resume from checkpoint, or evaluate against baseline bots (Random / Alternate / Myopic). Periodically writes:
-  - `qtable.json` — current policy
-  - `*_checkpoint.json` — resumable state
-  - `q*_deltas.jsonl` — incremental updates (for auditability)
+- `TrafficLights_UI.py`: PvP Tkinter UI (local two-player match; highlights a winning line when it appears).
+- `TrafficLights_QBot_Arena.py`: PvE Tkinter UI (play against the learned Q-bot). Looks for `qtable.json` in the working directory.
+- `TrafficLights_TrainingCode.py`: Train, resume from checkpoint, or evaluate against baseline bots (Random / Alternate / Myopic). Periodically writes:
+  - `qtable.json`: current policy
+  - `*_checkpoint.json`: resumable state
+  - `q*_deltas.jsonl`: incremental updates (for auditability)
 
 License: MIT (see `LICENSE`).
 
@@ -72,9 +72,10 @@ $$
 The code alternates between Player 1 and Player 2, so QBot learns to play in both seats.
 
 ### 2) Baseline Opponents and Training Curriculum
-- **RandomBot** — samples uniformly among legal moves. It is ideal for **early training** because it exposes many different opening positions quickly. However, once QBot becomes competent, games against RandomBot rarely progress into rich mid/late positions, so it provides diminishing returns. It may also reinforce blunder plays from QBot, as long as the game is won by QBot.
-- **AlternateBot** — plays **myopically** (tries to win now, otherwise blocks an immediate loss) for an early, randomly chosen number of plays and then switches to **random** play. This curriculum **forces the game past the opening** so QBot experiences, explores, and updates on **late‑game** structures. The trade‑off is that, after switching to random, AlternateBot may **fail to punish** certain blunders, so QBot is not always corrected for every mistake.
-- **MyopicBot** — a deterministic, tactical baseline: if a winning move exists **this turn**, it takes it; else if the opponent could win **next turn**, it blocks; otherwise it picks randomly among remaining legal moves. Training against MyopicBot provides **consistent punishment for obvious tactical errors** and requires QBot to spot immediate wins and blocks.
+- **RandomBot**: samples uniformly among legal moves. It is ideal for **early training** because it exposes many different opening positions quickly. However, once QBot becomes competent, games against RandomBot rarely progress into rich mid/late positions, so it provides diminishing returns. It may also reinforce blunder plays from QBot, as long as the game is won by QBot.
+- **AlternateBot**: plays **myopically** (tries to win now, otherwise blocks an immediate loss) for an early, randomly chosen number of plays and then switches to **random** play. This curriculum **forces the game past the opening** so QBot experiences, explores, and updates on **late‑game** structures. The trade‑off is that, after switching to random, AlternateBot may **fail to punish** certain blunders, so QBot is not always corrected for every mistake.
+- **MyopicBot**: a deterministic, tactical baseline: if a winning move exists **this turn**, it takes it; else if the opponent could win **next turn**, it blocks; otherwise it picks randomly among remaining legal moves. Training against MyopicBot provides **consistent punishment for obvious tactical errors** and requires QBot to spot immediate wins and blocks.
+- **HorizonBot**: a lookahead opponent that searches **N plies** (half-moves) ahead using negamax/minimax with **alpha-beta pruning**. For each legal move, it simulates the best play from both sides up to depth N; if the horizon is reached, it falls back to a heuristic that favors **immediate wins**, avoids moves that allow an **immediate loss**, and rewards strong **3-in-a-row potential** (with extra value on stable RED-based plans vs spoilable GREEN/YELLOW). Stronger than MyopicBot at spotting multi-move tactics, but slower as N increases.
 
 > Self‑play note: a QBot‑vs‑QBot mode is a natural extension for covering late‑game slips that baseline bots might miss and, in principle, it would double data throughput (both players learn simultaneously). This training code also includes QBot-vs-QBot, even though I only recommend it after a somewhat intense training with the Baseline Opponents.
 
