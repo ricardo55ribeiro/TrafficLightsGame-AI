@@ -259,7 +259,7 @@ class QBot:
 
 
 
-# Bots used to train Q-Agent
+# Bots used to train Q-Agent:
 class RandomBot:
     """
     Plays with uniform randomness
@@ -350,6 +350,272 @@ class AlternateBot:
             return self.random.choose(game)
     def on_move_played(self):
         self.ply += 1
+
+
+class HorizonBot:
+    """
+    HorizonBot looks N plies ahead (plies = half-moves) using Negamax + Alpha-Beta pruning;
+    Evaluation uses line potential, spoilability and threat safety heuristics.
+    """
+
+    WIN_SCORE = 10e9    # Very large number so wins dominate heuristic scores
+
+    def __init__(
+        self,
+        depth: int = 4,
+        seed: Optional[int] = None,
+        w_win_now: float = 50000.0,
+        w_safe_frac: float = 400.0,
+        w_line: float = 900.0,
+        w_mobility: float = 5.0,
+        w_green: float = 1.0,
+        w_yellow: float = 2.2,
+        w_red: float = 4.0,
+    ):
+        self.depth = int(depth)
+        if self.depth < 1:
+            raise ValueError("HorizonBot depth must be >= 1")
+
+        self._rng = random.Random(seed)
+
+        self.w_win_now = float(w_win_now)
+        self.w_safe_frac = float(w_safe_frac)
+        self.w_line = float(w_line)
+        self.w_mobility = float(w_mobility)
+
+        self.w_green = float(w_green)
+        self.w_yellow = float(w_yellow)
+        self.w_red = float(w_red)
+
+        self._tt: Dict[Tuple[str, int, int], float] = {}
+
+    def candidate_moves(self, game: TrafficLightsGame) -> List[Tuple[int, int]]:
+        if game.finished:
+            return []
+        return [(r, c) for r in range(game.rows) for c in range(game.cols) if game.board[r][c] != RED]
+
+    def choose(self, game: TrafficLightsGame) -> Optional[Tuple[int, int]]:
+        if game.finished:
+            return None
+        moves = self.candidate_moves(game)
+        if not moves:
+            return None
+
+        # Shuffle for deterministic tie-breaking
+        self._rng.shuffle(moves)
+
+        best_val: Optional[float] = None
+        best_moves: List[Tuple[int, int]] = []
+
+        alpha = float("-inf")
+        beta = float("inf")
+
+        for (r, c) in moves:
+            child = self._clone_game(game)
+            if not child.advance(r, c):
+                continue
+
+            val = -self._negamax(child, depth=self.depth - 1, alpha=-beta, beta=-alpha, ply=1)
+
+            if (best_val is None) or (val > best_val):
+                best_val = val
+                best_moves = [(r, c)]
+            elif val == best_val:
+                best_moves.append((r, c))
+
+            if best_val is not None:
+                alpha = max(alpha, best_val)
+
+        if not best_moves:
+            return None
+        return self._rng.choice(best_moves)
+
+    def play(self, game: TrafficLightsGame) -> bool:
+        mv = self.choose(game)
+        if mv is None:
+            return False
+        r, c = mv
+        return game.advance(r, c)
+    
+
+    # Negamax + Alpha-Beta
+    def _negamax(self, game: TrafficLightsGame, depth: int, alpha: float, beta: float, ply: int) -> float:
+        if game.finished:
+            return -(self.WIN_SCORE - ply)
+
+        moves = self.candidate_moves(game)
+
+        if depth <= 0:
+            return self._evaluate_leaf(game, moves)
+
+        key = (self._state_key(game), depth, ply)
+        if key in self._tt:
+            return self._tt[key]
+
+        self._rng.shuffle(moves)
+
+        best = float("-inf")
+        cut = False
+
+        for (r, c) in moves:
+            child = self._clone_game(game)
+            if not child.advance(r, c):
+                continue
+
+            val = -self._negamax(child, depth - 1, -beta, -alpha, ply + 1)
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                cut = True
+                break
+
+        if (not cut) and (best != float("-inf")):
+            self._tt[key] = best
+
+        return best if best != float("-inf") else 0.0
+
+
+    # Heuristic leaf evaluation
+    def _evaluate_leaf(self, game: TrafficLightsGame, moves: List[Tuple[int, int]]) -> float:
+        # Count immediate wins for side to move
+        win_now = self._count_immediate_wins(game, moves)
+
+        # Fraction of moves that don't allow opponent immediate win reply
+        safe_moves = self._count_safe_moves(game, moves)
+        safe_frac = safe_moves / max(1, len(moves))
+
+        # Line reachability + distance-to-line, with spoilability penalty for G/Y
+        line_score = self._line_potential_score(game)
+
+        # Mobility tie-break
+        mobility = len(moves)
+
+        return (
+            self.w_win_now * win_now
+            + self.w_safe_frac * safe_frac
+            + self.w_line * line_score
+            + self.w_mobility * mobility
+        )
+
+    def _count_immediate_wins(self, game: TrafficLightsGame, moves: List[Tuple[int, int]]) -> int:
+        cur = game.current_player
+        cnt = 0
+        for (r, c) in moves:
+            child = self._clone_game(game)
+            if not child.advance(r, c):
+                continue
+            if child.finished and child.winner == cur:
+                cnt += 1
+        return cnt
+
+    def _count_safe_moves(self, game: TrafficLightsGame, moves: List[Tuple[int, int]]) -> int:
+        """
+        A move is "safe" if after playing it (and not immediately winning),
+        opponent has no immediate winning reply.
+        """
+        cur = game.current_player
+        safe = 0
+
+        for (r, c) in moves:
+            after = self._clone_game(game)
+            if not after.advance(r, c):
+                continue
+
+            # If we win immediately, it's safe
+            if after.finished and after.winner == cur:
+                safe += 1
+                continue
+
+            opp_has_win = False
+            opp_moves = self.candidate_moves(after)
+            for (rr, cc) in opp_moves:
+                reply = self._clone_game(after)
+                if not reply.advance(rr, cc):
+                    continue
+                if reply.finished and reply.winner == after.current_player:
+                    opp_has_win = True
+                    break
+
+            if not opp_has_win:
+                safe += 1
+
+        return safe
+
+    def _line_potential_score(self, game: TrafficLightsGame) -> float:
+        """
+        Impartial structural score: how close the board is to producing any 3-in-a-row,
+        weighted by target stability (Red is stable, Green/Yellow is spoilable).
+        """
+        b = game.board
+        total = 0.0
+        for coords in self._all_win_lines(game):
+            vals = [b[r][c] for (r, c) in coords]
+            total += self._score_line_for_target(vals, target=GREEN, base_w=self.w_green)
+            total += self._score_line_for_target(vals, target=YELLOW, base_w=self.w_yellow)
+            total += self._score_line_for_target(vals, target=RED, base_w=self.w_red)
+        return total
+
+    def _score_line_for_target(self, vals: List[int], target: int, base_w: float) -> float:
+        if max(vals) > target:
+            return 0.0
+
+        dist = (target - vals[0]) + (target - vals[1]) + (target - vals[2])
+        prox = 1.0 / (1.0 + float(dist))  # closer is better
+
+        exact = (1 if vals[0] == target else 0) + (1 if vals[1] == target else 0) + (1 if vals[2] == target else 0)
+
+        if target == RED:
+            stability = 1.0
+        elif target == YELLOW:
+            stability = 1.0 / (1.0 + 1.5 * exact)
+        else:   # elif target == GREEN:
+            stability = 1.0 / (1.0 + 2.0 * exact)
+
+        return float(base_w) * prox * stability
+
+
+    # Helpers
+    @staticmethod
+    def _state_key(game: TrafficLightsGame) -> str:
+        rows = [''.join(str(x) for x in row) for row in game.board]
+        return '/'.join(rows) + f'|{game.current_player}'
+
+    @staticmethod
+    def _clone_game(game: TrafficLightsGame) -> TrafficLightsGame:
+        g = TrafficLightsGame(rows=game.rows, cols=game.cols)
+        g.board = [row[:] for row in game.board]
+        g.finished = game.finished
+        g.winning_color = game.winning_color
+        g.winning_line = (game.winning_line[:] if game.winning_line is not None else None)
+        g.current_player = game.current_player
+        g.winner = game.winner
+        return g
+
+    @staticmethod
+    def _all_win_lines(game: TrafficLightsGame) -> List[List[Tuple[int, int]]]:
+        lines: List[List[Tuple[int, int]]] = []
+
+        # Horizontals
+        for r in range(game.rows):
+            for c in (0, 1):
+                lines.append([(r, c), (r, c + 1), (r, c + 2)])
+
+        # Verticals
+        for c in range(game.cols):
+            lines.append([(0, c), (1, c), (2, c)])
+
+        # Diagonals down-right (\)
+        for c in (0, 1):
+            lines.append([(0, c), (1, c + 1), (2, c + 2)])
+
+        # Diagonals down-left (/)
+        for c in (2, 3):
+            lines.append([(0, c), (1, c - 1), (2, c - 2)])
+
+        return lines
+
 
 
 
@@ -791,6 +1057,152 @@ def train_qbot_vs_alternatebot(
     return qb, {"QBot": qb_wins, "Alternate": opp_wins, "P1": p1_wins, "P2": p2_wins}
 
 
+def train_qbot_vs_horizonbot(
+    n_games: int,
+    horizon_n: int,
+    q_path: str = "qtable.json",
+    alpha: float = 0.5,
+    gamma: float = 0.99,
+    epsilon_start: float = 0.20,
+    epsilon_end: float = 0.01,
+    epsilon_decay: float = 0.9995,
+    save_every: int = 5000,
+    verbose_every: int = 1000,
+    seed: Optional[int] = None,
+    checkpoint_path: str = "horizon_checkpoint.json",
+    resume: bool = True,
+    delta_path: str = "q_horizon_deltas.jsonl",
+):
+    delta = DeltaLogger(path=delta_path, flush_every=5000)
+    qb = QBot(alpha=alpha, gamma=gamma, epsilon=epsilon_start, seed=seed,
+              q_path=q_path if os.path.exists(q_path) else None,
+              delta_logger=delta)
+    opp = HorizonBot(depth=horizon_n, seed=seed)
+    delta.replay_into(qb.Q)
+
+    start_game = 1
+    eps = epsilon_start
+    if resume and os.path.exists(checkpoint_path):
+        try:
+            with open(checkpoint_path, "r", encoding="utf-8") as f:
+                ck = json.load(f)
+            start_game = int(ck.get("next_game", 1))
+            eps = float(ck.get("epsilon", epsilon_start))
+            eps = max(epsilon_end, min(eps, epsilon_start))
+            print(f"[resume] starting at game {start_game} with ε={eps:.4f}")
+        except Exception:
+            pass
+    qb.epsilon = eps
+
+    def save_checkpoint(next_game: int, epsilon_val: float):
+        _atomic_json_write(checkpoint_path, {
+            "next_game": next_game,
+            "epsilon": float(epsilon_val),
+            "qtable_rows": len(qb.Q),
+            "horizon_n": int(horizon_n),
+        })
+
+    qb_wins = opp_wins = 0
+    p1_wins = p2_wins = 0
+
+    try:
+        for g_idx in range(start_game, start_game + n_games):
+            qb.epsilon = eps if g_idx == start_game else max(epsilon_end, qb.epsilon * epsilon_decay)
+            eps = qb.epsilon
+
+            game = TrafficLightsGame()
+            qb_player = 1 if (g_idx % 2 == 1) else 2
+            pending_s = None
+            pending_a = None
+
+            while not game.finished:
+                if game.current_player == qb_player:
+                    s = qb._state_key(game)
+                    move = qb.choose(game)
+                    if move is None:
+                        if pending_s is not None and pending_a is not None:
+                            qb.update(pending_s, pending_a, 0.0, None, [])
+                            pending_s = pending_a = None
+                        break
+                    r, c = move
+                    a_key = qb._action_key(r, c)
+                    ok = game.advance(r, c)
+                    if not ok:
+                        qb.update(s, a_key, -1.0, None, [])
+                        break
+                    if game.finished:
+                        qb.update(s, a_key, +1.0, None, [])
+                        qb_wins += 1
+                        if game.winner == 1: p1_wins += 1
+                        else: p2_wins += 1
+                        break
+                    pending_s, pending_a = s, a_key
+                else:
+                    move_opp = opp.choose(game)
+                    if move_opp is None:
+                        if pending_s is not None and pending_a is not None:
+                            qb.update(pending_s, pending_a, 0.0, None, [])
+                            pending_s = pending_a = None
+                        break
+                    rr, cc = move_opp
+                    ok = game.advance(rr, cc)
+                    if not ok:
+                        if pending_s is not None and pending_a is not None:
+                            qb.update(pending_s, pending_a, 0.0, None, [])
+                            pending_s = pending_a = None
+                        break
+                    if game.finished:
+                        if pending_s is not None and pending_a is not None:
+                            qb.update(pending_s, pending_a, -1.0, None, [])
+                            pending_s = pending_a = None
+                        opp_wins += 1
+                        if game.winner == 1: p1_wins += 1
+                        else: p2_wins += 1
+                        break
+                    else:
+                        if pending_s is not None and pending_a is not None:
+                            s_next = qb._state_key(game)
+                            legal_next = qb.candidate_moves(game)
+                            qb.update(pending_s, pending_a, 0.0, s_next, legal_next)
+                            pending_s = pending_a = None
+
+            if save_every and (g_idx % save_every == 0):
+                delta.flush()
+                save_checkpoint(g_idx + 1, eps)
+
+            if verbose_every and (g_idx % verbose_every == 0):
+                total = qb_wins + opp_wins
+                print(f"[{g_idx}] ε={qb.epsilon:.4f}  QBot:{qb_wins}  Horizon:{opp_wins}  "
+                      f"(P1:{p1_wins} P2:{p2_wins}, decided={total})")
+
+        delta.flush()
+        if os.path.exists(q_path):
+            with open(q_path, "r", encoding="utf-8") as f:
+                bigQ = json.load(f)
+        else:
+            bigQ = {}
+        _ = delta.replay_into(bigQ)
+        _atomic_json_write(q_path, bigQ)
+        delta.rotate()
+        save_checkpoint(g_idx + 1, eps)
+
+    except KeyboardInterrupt:
+        print("\n[train] Ctrl+C. Flushing deltas and consolidating atomically...")
+        delta.flush()
+        if os.path.exists(q_path):
+            with open(q_path, "r", encoding="utf-8") as f:
+                bigQ = json.load(f)
+        else:
+            bigQ = {}
+        _ = delta.replay_into(bigQ)
+        _atomic_json_write(q_path, bigQ)
+        delta.rotate()
+        next_g = (g_idx + 1) if 'g_idx' in locals() else start_game
+        save_checkpoint(next_g, eps)
+
+    return qb, {"QBot": qb_wins, "Horizon": opp_wins, "P1": p1_wins, "P2": p2_wins}
+
+
 # QBot vs QBot training function, the Agent plays against himself
 def train_qbot_vs_qbot_shared(
     n_games: int,
@@ -1032,6 +1444,38 @@ def eval_qbot_vs_alternate(
     return {"QBot": qb_wins, "Alternate": opp_wins, "P1": p1_wins, "P2": p2_wins}
 
 
+def eval_qbot_vs_horizon(
+    n_games: int = 1000,
+    horizon_n: int = 4,
+    q_path: str = "qtable.json",
+    seed: Optional[int] = None,
+):
+    qb = QBot(alpha=0.0, gamma=0.99, epsilon=0.0, seed=seed, q_path=q_path)
+    opp = HorizonBot(depth=horizon_n, seed=seed)
+
+    qb_wins = opp_wins = 0
+    p1_wins = p2_wins = 0
+
+    for i in range(1, n_games + 1):
+        game = TrafficLightsGame()
+        qb_player = 1 if (i % 2 == 1) else 2
+
+        while not game.finished:
+            bot = qb if game.current_player == qb_player else opp
+            move = bot.choose(game)
+            if move is None:
+                break
+            r, c = move
+            game.advance(r, c)
+
+        if game.winner == qb_player: qb_wins += 1
+        elif game.winner is not None: opp_wins += 1
+        if game.winner == 1: p1_wins += 1
+        elif game.winner == 2: p2_wins += 1
+
+    return {"QBot": qb_wins, "Horizon": opp_wins, "P1": p1_wins, "P2": p2_wins}
+
+
 
 # CLI helpers
 def _read_positive_int(prompt: str) -> int:
@@ -1045,7 +1489,7 @@ def _read_positive_int(prompt: str) -> int:
 
 
 if __name__ == "__main__":
-    choice = input("With what bot do you want to train: Random, Alternate, Myopic or QBot? (R, A, M, Q) \nOr do you want to evaluate? (1 for R, 2 for A, 3 for M) ").strip().upper()
+    choice = input("With what bot do you want to train: Random, Alternate, Myopic, Horizon or QBot? (R, A, M, H, Q) \nOr do you want to evaluate? (1 for R, 2 for A, 3 for M, 4 for H) ").strip().upper()
     choice = choice[:1] if choice else ""
 
     if choice == "R":
@@ -1091,6 +1535,22 @@ if __name__ == "__main__":
         )
         print("Training finished. Agent/seat wins:", stats)
 
+    elif choice == "H":
+        horizon_n = _read_positive_int("HorizonBot: what N (half-plays to look ahead)? ")
+        n = _read_positive_int("How many training games (QBot vs HorizonBot)? ")
+        bot, stats = train_qbot_vs_horizonbot(
+            n_games=n,
+            horizon_n=horizon_n,
+            q_path="qtable.json",
+            alpha=0.5, gamma=0.99,
+            epsilon_start=0.2, epsilon_end=0.005, epsilon_decay=0.9995,
+            save_every=5000, verbose_every=2000,
+            checkpoint_path="horizon_checkpoint.json",
+            resume=True,
+            delta_path="q_horizon_deltas.jsonl",
+        )
+        print("Training finished. Agent/seat wins:", stats)
+
     elif choice == "Q":
         n = _read_positive_int("How many training games (QBot vs QBot self-play)? ")
         bot, stats = train_qbot_vs_qbot_shared(
@@ -1118,11 +1578,17 @@ if __name__ == "__main__":
         n = _read_positive_int("How many evaluation games (QBot vs MyopicBot)? ")
         eval_stats = eval_qbot_vs_myopic(n_games=n, q_path="qtable.json")
         print("Evaluation vs MyopicBot:", eval_stats)
-    
+
+    elif choice == "4":
+        horizon_n = _read_positive_int("HorizonBot: what N (half-plays to look ahead)? ")
+        n = _read_positive_int("How many evaluation games (QBot vs HorizonBot)? ")
+        eval_stats = eval_qbot_vs_horizon(n_games=n, horizon_n=horizon_n, q_path="qtable.json")
+        print("Evaluation vs HorizonBot:", eval_stats)
+
     else:
-        print("Invalid choice. Please run again and pick R, A, M, or Q to train the agent; \nOr in alternative, pick 1, 2 or 3 to evaluate it.\n")
+        print("Invalid choice. Please run again and pick R, A, M, H or Q to train the agent; \nOr in alternative, pick 1, 2, 3 or 4 to evaluate it.\n")
         raise SystemExit(1)
 
-    if choice != "1" and choice != "2" and choice != "3":
+    if choice != "1" and choice != "2" and choice != "3" and choice != "4":
         print("States learned:", len(bot.Q))
         print("Total (state,action) entries:", sum(len(a) for a in bot.Q.values()))
