@@ -77,6 +77,11 @@ The code alternates between Player 1 and Player 2, so QBot learns to play in bot
 - **MyopicBot**: a deterministic, tactical baseline: if a winning move exists **this turn**, it takes it; else if the opponent could win **next turn**, it blocks; otherwise it picks randomly among remaining legal moves. Training against MyopicBot provides **consistent punishment for obvious tactical errors** and requires QBot to spot immediate wins and blocks.
 - **HorizonBot**: a lookahead opponent that searches **N plies** (half-moves) ahead using negamax/minimax with **alpha-beta pruning**. For each legal move, it simulates the best play from both sides up to depth N; if the horizon is reached, it falls back to a heuristic that favors **immediate wins**, avoids moves that allow an **immediate loss**, and rewards strong **3-in-a-row potential** (with extra value on stable RED-based plans vs spoilable GREEN/YELLOW). Stronger than MyopicBot at spotting multi-move tactics, but slower as N increases.
 
+### Curriculum Mode (%)
+
+In addition to training against a single fixed opponent, the training includes a **curriculum mode** that mixes multiple opponents with percentages (summing to 100%). Each game, the opponent type is sampled according to these weights (e.g., 70% QBot self-play, 20% HorizonBot, 10% AlternateBot). This reduces overfitting to any single opponent style (it was, in fact, developed with self-play case in mind) and helps the agent see a wider range of mid/late-game positions.
+
+
 > Self‑play note: a QBot‑vs‑QBot mode is a natural extension for covering late‑game slips that baseline bots might miss and, in principle, it would double data throughput (both players learn simultaneously). This training code also includes QBot-vs-QBot, even though I only recommend it after a somewhat intense training with the Baseline Opponents.
 
 ### 3) Persistence: Atomic Saves, Delta Logging, and Checkpoints
